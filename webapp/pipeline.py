@@ -451,22 +451,23 @@ def _image_pages(path):
 
 
 def _scan_page(sid, folder, number, image):
-    count = 0
+    found = {}
+    for index, (text, (x0, y0, x1, y1), conf) in enumerate(
+            crop_for_labeling.lines(image, START_LANG, with_conf=True, tessdata_dir=START_TESSDATA)):
+        text = norm_label(text)
+        if y1 - y0 < 12 or len(text) < 2 or not any(c.isalnum() for c in text):
+            continue
+        pad = crop_for_labeling.PAD
+        crop = image[max(y0 - pad, 0):y1 + pad, max(x0 - pad, 0):x1 + pad]
+        name = f'{sid}_p{number}_{index:03d}'
+        cv2.imwrite(os.path.join(folder, 'scan', name + '.png'), crop)
+        _write_gt(os.path.join(folder, 'scan', name), text)
+        found[name] = {'source': sid, 'page': number, 'ocr': text, 'text': text,
+                       'conf': round(conf, 1), 'status': 'todo'}
+    # OCR mất vài giây mỗi trang: chỉ khoá lúc ghi, nếu không giao diện không đọc được trạng thái suốt lúc xử lý
     with store.lock:
-        for index, (text, (x0, y0, x1, y1), conf) in enumerate(
-                crop_for_labeling.lines(image, START_LANG, with_conf=True, tessdata_dir=START_TESSDATA)):
-            text = norm_label(text)
-            if y1 - y0 < 12 or len(text) < 2 or not any(c.isalnum() for c in text):
-                continue
-            pad = crop_for_labeling.PAD
-            crop = image[max(y0 - pad, 0):y1 + pad, max(x0 - pad, 0):x1 + pad]
-            name = f'{sid}_p{number}_{index:03d}'
-            cv2.imwrite(os.path.join(folder, 'scan', name + '.png'), crop)
-            _write_gt(os.path.join(folder, 'scan', name), text)
-            store.lines[name] = {'source': sid, 'page': number, 'ocr': text, 'text': text,
-                                 'conf': round(conf, 1), 'status': 'todo'}
-            count += 1
-    return count
+        store.lines.update(found)
+    return len(found)
 
 
 def _write_gt(base, text):
