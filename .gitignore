@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+dist/
+webapp/.deployed-commit
+# Danh sách file tài liệu khách hàng dùng cho eval_compare.py: chỉ để trên máy dev
+pairs.tsv

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Train Tesseract</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Train Tesseract <small>tiếng Việt — fine-tune từ <code>vie</code></small></h1>
+  <div id="jobbar" hidden>
+    <span id="job-kind" class="badge"></span>
+    <span id="job-msg"></span>
+    <progress id="job-progress" max="1" value="0"></progress>
+    <button id="job-stop" class="danger small">Dừng</button>
+  </div>
+</header>
+
+<nav id="tabs">
+  <button data-tab="env">1. Môi trường</button>
+  <button data-tab="files">2. Tải file gốc</button>
+  <button data-tab="label">3. Duyệt dòng scan <span id="todo-badge" class="pill"></span></button>
+  <button data-tab="train">4. Train</button>
+  <button data-tab="models">5. Model &amp; đánh giá</button>
+</nav>
+
+<main>
+<!-- 1. Môi trường -->
+<section id="tab-env" class="tab">
+  <h2>Môi trường train</h2>
+  <p class="muted">Chỉ cần làm 1 lần. App tự tải những gì còn thiếu (tesstrain, dữ liệu ngôn ngữ tiếng Việt, model <code>vie</code> bản best).
+    Dữ liệu và model nằm ở <code id="work-dir"></code>.</p>
+  <ul id="env-checks" class="checks"></ul>
+  <button id="btn-setup" class="primary">Cài đặt tự động</button>
+</section>
+
+<!-- 2. Tải file -->
+<section id="tab-files" class="tab">
+  <h2>Tải file gốc</h2>
+  <div id="dropzone">
+    <p><strong>Kéo thả file vào đây</strong> hoặc <label class="link">chọn file<input id="file-input" type="file" multiple hidden
+      accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.docx,.txt"></label></p>
+    <p class="muted">PDF scan, PDF xuất từ Word, ảnh scan (JPG/PNG/TIFF), DOCX, TXT. App tự nhận biết từng trang là scan hay có lớp chữ.
+      <br><strong>Có cả bản scan và bản gốc có chữ</strong> (vd. tự in rồi scan lại)? Tải cả hai lên: app tự điền sẵn chữ đúng cho dòng scan.</p>
+    <p>Dùng các file này để:
+      <label><input type="radio" name="role" value="train" checked> Train</label>
+      <label><input type="radio" name="role" value="eval"> Đánh giá <span class="muted">(không bao giờ đưa vào train)</span></label>
+    </p>
+  </div>
+  <div id="vod-import" class="card" hidden>
+    <strong>Kho vie-ocr-data:</strong> <span id="vod-import-text"></span>
+    <button id="btn-vod-import" class="small primary">Nhập vào app</button>
+    <div class="muted">Văn bản Chính phủ (scan thật) và Công báo (có lớp chữ, dùng làm bản chữ để tự điền nhãn cho bản scan).
+      Tải thêm bằng <code>vie-ocr-data/vod.sh download --source congbao_pairs</code> (cặp scan ↔ bản chữ, tốt nhất).</div>
+  </div>
+  <div id="upload-errors" class="error" hidden></div>
+  <table class="grid">
+    <thead><tr><th>File</th><th>Dùng để</th><th>Trang</th><th>Dòng tự gán nhãn</th><th>Dòng scan cần duyệt</th><th>Trạng thái</th><th></th></tr></thead>
+    <tbody id="sources"></tbody>
+  </table>
+  <p id="no-sources" class="muted">Chưa có file nào.</p>
+  <button id="btn-process" class="small" hidden>Xử lý lại file lỗi / đang chờ</button>
+</section>
+
+<!-- 3. Duyệt -->
+<section id="tab-label" class="tab">
+  <h2>Duyệt dòng scan</h2>
+  <p class="muted">Máy đã đọc sẵn từng dòng. Sửa ô chữ cho <strong>giống hệt ảnh</strong> (dấu, hoa/thường, dấu câu), rồi
+    <kbd>Enter</kbd> = duyệt và sang dòng sau, <kbd>Shift</kbd>+<kbd>Enter</kbd> = bỏ dòng (rác, cắt sai), <kbd>↑</kbd>/<kbd>↓</kbd> = di chuyển.
+    Chỉ dòng <em>đã duyệt</em> mới được dùng.</p>
+  <div class="toolbar">
+    <select id="f-source"></select>
+    <select id="f-status">
+      <option value="todo">Chưa duyệt</option>
+      <option value="approved">Đã duyệt</option>
+      <option value="rejected">Đã bỏ</option>
+      <option value="">Tất cả</option>
+    </select>
+    <select id="f-sort">
+      <option value="conf">Máy kém tự tin trước</option>
+      <option value="page">Theo thứ tự trang</option>
+      <option value="ref">Khớp bản chữ cao trước</option>
+    </select>
+    <button id="btn-match" class="small" title="Tìm lại chữ đúng cho các dòng chưa duyệt trong mọi file có lớp chữ">Khớp lại với bản chữ</button>
+    <span id="label-counts" class="muted"></span>
+  </div>
+  <div id="lines"></div>
+  <div class="toolbar">
+    <button id="btn-prev" class="small">← Trang trước</button>
+    <span id="page-info" class="muted"></span>
+    <button id="btn-next" class="small">Trang sau →</button>
+    <span class="spacer"></span>
+    <button id="btn-approve-page" class="small">Duyệt tất cả dòng chưa duyệt trên trang này</button>
+  </div>
+  <div class="toolbar">
+    <span class="muted">Duyệt nhanh mọi dòng chưa duyệt đã được điền chữ từ bản chữ, khớp từ</span>
+    <input id="approve-min" type="number" min="80" max="100" step="1" value="97" style="width:70px">%
+    <button id="btn-approve-matched" class="small">Duyệt các dòng khớp bản chữ</button>
+  </div>
+</section>
+
+<!-- 4. Train -->
+<section id="tab-train" class="tab">
+  <h2>Train</h2>
+  <div class="cards">
+    <div class="card"><div class="muted">Dòng tự gán nhãn (PDF có lớp chữ)</div><div class="big" id="c-auto">0</div></div>
+    <div class="card"><div class="muted">Dòng scan đã duyệt</div><div class="big" id="c-scan">0</div></div>
+    <div class="card"><div class="muted">Corpus (để sinh dòng giả lập)</div><div class="big" id="c-corpus">0</div></div>
+    <div class="card"><div class="muted">Kho vie-ocr-data (train / eval)</div><div class="big" id="c-ext">0</div></div>
+    <div class="card"><div class="muted">Bộ đánh giá: scan đã duyệt / dòng PDF</div><div class="big" id="c-eval">0</div></div>
+  </div>
+  <div id="train-warn" class="warn" hidden></div>
+  <form id="train-form" class="form">
+    <label>Tên model <input name="model" value="vie_syntra" pattern="[a-z][a-z0-9_]{1,40}" required>
+      <span class="muted">chữ thường, số, gạch dưới. Đây cũng là tên dùng với <code>-l</code>.</span></label>
+    <label>Số vòng train <input name="iterations" type="number" min="100" step="100" value="10000">
+      <span class="muted" id="eta"></span></label>
+    <label>Số dòng giả lập <input name="synth" type="number" min="0" step="100">
+      <span class="muted">vẽ từ chữ trong tài liệu, 30% IN HOA (điểm yếu của <code>vie</code>). 0 = tắt.</span></label>
+    <label>Số dòng từ kho vie-ocr-data <input name="external" type="number" min="0" step="1000">
+      <span class="muted" id="ext-hint"></span></label>
+    <label>Hệ số dòng scan thật <input name="real_weight" type="number" min="1" max="5" value="2">
+      <span class="muted">mỗi dòng scan đã duyệt được dùng N lần vì nó quý hơn dòng giả lập.</span></label>
+    <label class="inline"><input name="overwrite" type="checkbox"> Ghi đè nếu model cùng tên đã có</label>
+    <button class="primary" type="submit">Bắt đầu train</button>
+  </form>
+  <div id="train-live" hidden>
+    <h3>Tiến trình</h3>
+    <div id="train-metrics" class="muted"></div>
+    <svg id="chart" viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+  </div>
+  <details id="log-box"><summary>Nhật ký</summary><pre id="log"></pre></details>
+</section>
+
+<!-- 5. Model -->
+<section id="tab-models" class="tab">
+  <h2>Model đã train</h2>
+  <p class="muted">Thư mục model: <code id="models-dir"></code>. CER = tỉ lệ lỗi ký tự (càng thấp càng tốt).
+    Model đạt khi trên bộ <em>scan</em> CER giảm rõ so với <code>vie (gốc)</code> và trên bộ <em>pdf</em> không tăng.</p>
+  <div id="models"></div>
+  <p id="no-models" class="muted">Chưa có model nào.</p>
+</section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

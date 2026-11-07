@@ -1,0 +1,298 @@
+# Nguồn dữ liệu train Tesseract tiếng Việt. Thêm/bớt nguồn ở đây, không cần sửa code.
+#
+# license_status quyết định nguồn có được tải mặc định hay không (model dùng cho sản phẩm thương mại):
+#   open        giấy phép mở đã xác minh → tải mặc định
+#   unverified  chưa xác minh được giấy phép / nội dung có bản quyền của bên thứ ba → cần --allow unverified
+#   research    chỉ cho nghiên cứu/giáo dục → cần --allow research (KHÔNG dùng cho model thương mại)
+# kind: http (tải file), git (sparse checkout), manual (chỉ in hướng dẫn, không tự động)
+# extractor: cách trích text ở lệnh extract (xem extract.py); fonts = font để render
+#
+# Xác minh lần đầu: 2026-11-07 (curl HEAD/GET từ máy dev). Chạy `vod.py verify` để kiểm tra lại.
+
+sources:
+  # ---------------------------------------------------------------- A. Tesseract
+  - id: tessdata_best
+    priority: 1
+    group: tesseract
+    kind: http
+    files:
+      - url: https://github.com/tesseract-ocr/tessdata_best/raw/main/vie.traineddata
+        path: vie.traineddata
+    install_to: tessdata      # chép sang data/tessdata/
+    license: Apache-2.0
+    license_status: open
+    verified: {date: 2026-11-07, status: ok, note: "12,4 MB; web app train cũng tự tải file này"}
+
+  - id: langdata_lstm
+    priority: 1
+    group: tesseract
+    kind: git
+    repo: https://github.com/tesseract-ocr/langdata_lstm.git
+    sparse: [vie, radical-stroke.txt, common.punc, Latin.unicharset, LICENSE]
+    extractor: langdata
+    gt_weight: 0             # chuỗi từ ngẫu nhiên lẫn rác ("t\\lChanh", ")Ã") → mặc định không dùng; bật: --weights langdata_lstm=0.2
+    license: Apache-2.0
+    license_status: open
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: >-
+        GitHub API trả 403 khi không đăng nhập → dùng git sparse checkout. vie.training_text 280.627 dòng là chuỗi
+        từ ngẫu nhiên (lẫn ký tự Thổ Nhĩ Kỳ), bộ lọc ký tự sẽ loại dòng lạ.
+
+  - id: tesstrain
+    priority: 1
+    group: tesseract
+    kind: manual
+    license: Apache-2.0
+    license_status: open
+    instructions: "Không phải dữ liệu. Web app train (tab 1) tự clone tesstrain."
+    verified: {date: 2026-11-07, status: ok}
+
+  - id: langdata
+    priority: 2
+    group: tesseract
+    kind: git
+    repo: https://github.com/tesseract-ocr/langdata.git
+    sparse: [vie, LICENSE]
+    extractor: langdata
+    license: Apache-2.0
+    license_status: open
+    verified: {date: 2026-11-07, status: ok, note: "bản cũ, chỉ để đối chiếu"}
+
+  # ---------------------------------------------------------------- B. Văn bản thuần
+  - id: viwikisource
+    priority: 1
+    group: text
+    kind: http
+    files:
+      - url: https://dumps.wikimedia.org/viwikisource/latest/viwikisource-latest-pages-articles.xml.bz2
+        path: viwikisource-latest-pages-articles.xml.bz2
+        sha1_from: https://dumps.wikimedia.org/viwikisource/latest/viwikisource-latest-sha1sums.txt
+    extractor: wiki
+    gt_weight: 2             # văn bản luật/hành chính: gần tài liệu khách nhất → lấy nhiều gấp đôi
+    license: "CC BY-SA 4.0 / public domain (văn bản quy phạm pháp luật không được bảo hộ quyền tác giả)"
+    license_status: open
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: >-
+        THÊM NGOÀI SPEC. 39,5 MB nén. Có Bộ luật Dân sự, Hiến pháp, nghị định… → gần văn bản hợp đồng/thầu nhất trong
+        các nguồn mở.
+
+  - id: viwiki
+    priority: 1
+    group: text
+    kind: http
+    files:
+      - url: https://dumps.wikimedia.org/viwiki/latest/viwiki-latest-pages-articles.xml.bz2
+        path: viwiki-latest-pages-articles.xml.bz2
+        sha1_from: https://dumps.wikimedia.org/viwiki/latest/viwiki-latest-sha1sums.txt
+    extractor: wiki
+    sample_pages: 0.08       # ~100.000/1,3 triệu bài, rải đều cả dump (giới hạn --max-lines không bị lấp đầy bởi vài bài đầu)
+    gt_weight: 1
+    license: CC BY-SA 4.0
+    license_status: open
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: "1,17 GB nén (bản 20261101). Tự viết bộ lọc markup thay wikiextractor (wikiextractor lỗi trên Python 3.11+)."
+
+  - id: leipzig_vi
+    priority: 2
+    group: text
+    kind: http
+    files:
+      - url: https://downloads.wortschatz-leipzig.de/corpora/vie_wikipedia_2021_1M.tar.gz
+        path: vie_wikipedia_2021_1M.tar.gz
+    extractor: leipzig
+    license: "CC BY 4.0 theo spec — CHƯA xác minh: trang mô tả bị Anubis (chống bot) chặn, file tải không kèm giấy phép"
+    license_status: unverified
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: >-
+        217 MB. Còn các bản vie_news_2022_1M (234 MB), vie_mixed_2014_1M (306 MB), vie-vn_web_2015_1M (240 MB):
+        thêm vào files nếu cần. Mở https://wortschatz.uni-leipzig.de/en/download bằng trình duyệt để đọc điều khoản,
+        nếu là CC BY thì đổi license_status thành open.
+
+  - id: vntc
+    priority: 1
+    group: text
+    kind: http
+    files:
+      - url: https://github.com/duyvuleo/VNTC/raw/master/Data/27Topics/Ver1.1/Train.rar
+        path: 27Topics_Train.rar
+      - url: https://github.com/duyvuleo/VNTC/raw/master/Data/27Topics/Ver1.1/Test.rar
+        path: 27Topics_Test.rar
+    extractor: vntc
+    license: "Repo ghi MIT (2019) nhưng nội dung là bài báo, bản quyền thuộc các toà soạn"
+    license_status: research
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: "Dữ liệu là file .rar (giải nén bằng bsdtar). Bộ 10Topics (126 MB) trùng nội dung, không lấy."
+
+  - id: binhvq_news
+    priority: 2
+    group: text
+    kind: manual
+    license: "Không có giấy phép cho dữ liệu"
+    license_status: research
+    instructions: "ĐÃ NGỪNG PHÂN PHỐI (README 08/2026): link tải bị gỡ, file Google Drive đã xoá. Bỏ nguồn này."
+    verified: {date: 2026-11-07, status: dead}
+
+  - id: cc100_vi
+    priority: 2
+    group: text
+    kind: http
+    files:
+      - url: https://data.statmt.org/cc-100/vi.txt.xz
+        path: vi.txt.xz
+    extractor: cc100
+    default_max_bytes: 300000000   # file đầy đủ 28 GB nén; mặc định chỉ lấy ~300 MB đầu
+    license: "Văn bản web CommonCrawl, trang tải không ghi giấy phép"
+    license_status: unverified
+    verified: {date: 2026-11-07, status: ok, note: "29,5 GB nén (.xz), hỗ trợ tải một phần"}
+
+  - id: oscar_vi
+    priority: 3
+    group: text
+    kind: manual
+    license: "Theo điều khoản OSCAR (gated trên Hugging Face)"
+    license_status: unverified
+    instructions: >-
+      Dataset gated: đăng nhập https://huggingface.co/datasets/oscar-corpus/OSCAR-2301, chấp nhận điều khoản, rồi
+      tự tải phần vi. Script không vượt qua bước đăng nhập. Đặt file .txt vào data/raw/oscar_vi/ rồi chạy
+      `vod.py extract --source oscar_vi`.
+    extractor: plain
+    verified: {date: 2026-11-07, status: gated}
+
+  - id: opus_vi
+    priority: 3
+    group: text
+    kind: manual
+    license: "Tuỳ bộ con"
+    license_status: unverified
+    instructions: >-
+      Chọn bộ trên https://opus.nlpl.eu (vd. TED2020, kiểm tra giấy phép từng bộ), tải bản Moses, đặt file *.vi
+      vào data/raw/opus_vi/ rồi chạy `vod.py extract --source opus_vi`.
+    extractor: plain
+    verified: {date: 2026-11-07, status: ok, note: "trang sống; không tự động vì giấy phép khác nhau theo bộ"}
+
+  # ---------------------------------------------------------------- B2. Văn bản Chính phủ (scan thật + bản chữ)
+  - id: chinhphu_scan
+    priority: 1
+    group: images
+    kind: portal
+    portal: vanban
+    want: scan               # chỉ giữ văn bản có ≥ 50% trang là ảnh scan (scan | text | all)
+    default_max_docs: 30
+    license: "Văn bản quy phạm pháp luật / hành chính: không thuộc đối tượng bảo hộ quyền tác giả (Điều 15 Luật SHTT)"
+    license_status: open
+    instructions: >-
+      PDF scan bản ký của văn bản Chính phủ, bộ, tỉnh (vanban.chinhphu.vn). Không có nhãn: đưa vào web app (tab 2,
+      nút "Nhập từ kho vie-ocr-data"), app OCR nháp và tự điền chữ đúng nếu tìm thấy bản chữ (vd. Công báo).
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: >-
+        robots.txt Allow: /. Duyệt lùi theo docid. VD Nghị định 401/2026 32/32 trang scan; VBHN 123/BCT 194 trang scan
+        150 DPI. Khoảng 1/3 văn bản là PDF có lớp chữ (bị bỏ khi want=scan).
+
+  - id: congbao
+    priority: 1
+    group: text
+    kind: portal
+    portal: congbao
+    default_max_docs: 10
+    extractor: pdf_text
+    license: "Công báo: văn bản quy phạm pháp luật, không thuộc đối tượng bảo hộ quyền tác giả (Điều 15 Luật SHTT)"
+    license_status: open
+    instructions: >-
+      Công báo (congbao.chinhphu.vn): PDF dàn trang có lớp chữ, ~100–300 trang/số. Vừa là dòng tự gán nhãn, vừa là
+      bản chữ để web app điền sẵn nhãn cho dòng scan của cùng văn bản.
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: "robots.txt Allow: /. Số 578-VBHN: 303/303 trang có lớp chữ. Tìm kiếm của site không dùng được qua script."
+
+  - id: congbao_pairs
+    priority: 1
+    group: text
+    kind: portal
+    portal: pairs
+    default_max_docs: 60       # số Công báo được đọc mục lục (không tải PDF cả số)
+    default_max_scan_ids: 800  # số trang văn bản trên vanban.chinhphu.vn được đọc tiêu đề (~400 văn bản/tháng)
+    license: "Công báo: văn bản quy phạm pháp luật, không thuộc đối tượng bảo hộ quyền tác giả (Điều 15 Luật SHTT)"
+    license_status: open
+    instructions: >-
+      Cặp (bản scan trên vanban.chinhphu.vn ↔ PDF có chữ của cùng văn bản trên Công báo), ghép theo số hiệu. Lệnh:
+      `vod.sh download --source congbao_pairs`. Chạy lại về sau để lấy thêm (đã đọc thì bỏ qua). Nhập vào web app
+      bằng nút "Nhập vào app": app tự điền nhãn cho bản scan từ bản Công báo.
+    verified: {date: 2026-11-07, status: ok, note: "mỗi văn bản trên Công báo có PDF riêng; URL chứa số hiệu"}
+
+  # ---------------------------------------------------------------- C. Ảnh có nhãn
+  - id: vintext
+    priority: 2
+    group: images
+    kind: manual
+    license: "Chỉ nghiên cứu/giáo dục, cấm phân phối lại (README VinAIResearch/dict-guided)"
+    license_status: research
+    instructions: >-
+      Ảnh chữ trên biển hiệu (scene text), khác xa văn bản scan → ít giá trị cho bài toán này, và không dùng được cho
+      model thương mại. Link Google Drive trong README https://github.com/VinAIResearch/dict-guided . Chưa làm bước cắt
+      ảnh theo bounding box.
+    verified: {date: 2026-11-07, status: ok}
+
+  - id: mcocr
+    priority: 3
+    group: images
+    kind: manual
+    license: "Theo điều lệ cuộc thi RIVF 2021"
+    license_status: research
+    instructions: "Hoá đơn/biên lai; cần đăng ký cuộc thi. Không tự động."
+    verified: {date: 2026-11-07, status: not_checked}
+
+  - id: uit_hwdb
+    priority: 3
+    group: images
+    kind: manual
+    license: "Phải gửi yêu cầu cho UIT"
+    license_status: research
+    instructions: "Chữ viết tay; chỉ cần nếu OCR viết tay. Không tự động."
+    verified: {date: 2026-11-07, status: not_checked}
+
+  - id: cinnamon_hw
+    priority: 3
+    group: images
+    kind: manual
+    license: "Không rõ"
+    license_status: research
+    instructions: "Chữ viết tay (địa chỉ); link có thể đã gỡ. Không tự động."
+    verified: {date: 2026-11-07, status: not_checked}
+
+  # ---------------------------------------------------------------- D. Font
+  - id: google_fonts
+    priority: 1
+    group: fonts
+    kind: git
+    repo: https://github.com/google/fonts.git
+    sparse: [ofl/bevietnampro, ofl/roboto, ofl/notosans, ofl/notoserif, ofl/sourcesans3, ofl/lora,
+             ofl/merriweather, ofl/montserrat, ofl/tinos, ofl/arimo]
+    extractor: fonts
+    license: "SIL OFL 1.1 / Apache-2.0"
+    license_status: open
+    verified:
+      date: 2026-11-07
+      status: ok
+      note: "Thêm Tinos/Arimo (cùng kích thước chữ với Times New Roman/Arial, phổ biến trong văn bản hành chính)."
+
+  - id: system_fonts
+    priority: 2
+    group: fonts
+    kind: manual
+    license: "Bản quyền Microsoft, không phân phối lại"
+    license_status: open
+    instructions: "Không tải. build-gt tự dùng Times New Roman/Arial/Tahoma có sẵn trên máy, thêm thư mục khác bằng --fonts."
+    verified: {date: 2026-11-07, status: ok}
