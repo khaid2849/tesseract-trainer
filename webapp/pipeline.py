@@ -1,5 +1,7 @@
 """Tesseract fine-tune pipeline: uploaded files → labeled line images → tesstrain → .traineddata."""
 import argparse
+import concurrent.futures
+import contextlib
 import functools
 import json
 import os
@@ -66,6 +68,8 @@ MODEL_NAME_RE = re.compile(r'^[a-z][a-z0-9_]{1,40}$')
 ITER_RE = re.compile(r'At iteration (\d+)/(\d+)/(\d+).*?BCER train=([\d.]+)%')
 EVAL_RE = re.compile(r'Eval Char error rate=([\d.]+)')
 FINISHED_RE = re.compile(r'Finished! Selected model with minimal training error rate \(BCER\) = ([\d.]+)')
+# số trang OCR cùng lúc, mỗi trang 1 tiến trình tesseract 1 luồng (~100-200 MB RAM)
+OCR_WORKERS = max(1, int(os.environ.get('TT_OCR_WORKERS') or min(os.cpu_count() or 1, 8)))
 EVAL_LIMIT = 600  # số dòng tối đa mỗi bộ đánh giá, để 1 lần đo vài phút
 
 
@@ -353,81 +357,213 @@ def delete_source(sid):
 
 
 def process_job(job):
+    """Process pending sources. The job thread opens/renders pages (pymupdf is not thread-safe) and hands each scan
+    page to a pool of OCR_WORKERS threads, each driving its own single-threaded tesseract process; it moves on to
+    the next page/file without waiting, so pages of several files are OCR'd at once."""
     pending = [s for s in store.sources.values() if s['status'] in ('pending', 'error')]
     if pending and not os.path.exists(os.path.join(START_TESSDATA, START_LANG + '.traineddata')):
         raise RuntimeError('Chưa có model vie để đọc nháp bản scan: vào tab "1. Môi trường" bấm "Cài đặt tự động", '
                            'rồi bấm "Xử lý lại file lỗi / đang chờ"')
-    for i, source in enumerate(pending):
-        job.check_stop()
-        job.step(f'Xử lý {source["name"]} ({i + 1}/{len(pending)})', i / max(len(pending), 1))
-        source.update(status='processing', error='')
+    if not pending:
+        job.step('Không có file nào đang chờ xử lý', 1.0)
+        return
+    job.step(f'Xử lý {len(pending)} file, OCR song song {OCR_WORKERS} trang một lúc', 0.0)
+    batch = _Batch(job, sum(_unit_count(s) for s in pending))
+    tasks = batch.tasks
+    with _single_thread_tesseract():
         try:
-            _process_source(job, source, i, len(pending))
-            source['status'] = 'done'
-        except JobStopped:
-            source['status'] = 'pending'
-            raise
-        except Exception as error:  # noqa: BLE001
-            source.update(status='error', error=str(error))
-            job.log(f'LỖI {source["name"]}: {error}')
-        store.save()
+            for i, source in enumerate(pending):
+                job.check_stop()
+                job.log(f'» Đọc {source["name"]} ({i + 1}/{len(pending)})')
+                task = _FileTask(source)
+                tasks.append(task)
+                try:
+                    _submit_source(batch, task)
+                except JobStopped:
+                    raise
+                except Exception as error:  # noqa: BLE001
+                    task.error = error
+                task.submitted = True
+                batch.finish_ready()
+            while not batch.finish_ready():
+                job.check_stop()
+                running = [f for f in batch.futures if not f.done()]
+                concurrent.futures.wait(running, timeout=0.5, return_when=concurrent.futures.FIRST_COMPLETED)
+        finally:
+            batch.shutdown()
+            with store.lock:
+                for task in tasks:
+                    if not task.finished:  # dừng giữa chừng: làm lại từ đầu file đó ở lần sau
+                        task.source['status'] = 'pending'
+            store.save()
     job.step(f'Xong {len(pending)} file', 0.97)
-    if pending:
-        match_job(job, progress_from=0.97)
+    match_job(job, progress_from=0.97)
 
 
-def _process_source(job, source, index, total):
-    sid = source['id']
-    folder = os.path.join(LINES, sid)
-    shutil.rmtree(folder, ignore_errors=True)
+@contextlib.contextmanager
+def _single_thread_tesseract():
+    """N tesseract processes each spawning OpenMP threads fight over the cores; one thread each is fastest."""
+    old = os.environ.get('OMP_THREAD_LIMIT')
+    os.environ['OMP_THREAD_LIMIT'] = '1'
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop('OMP_THREAD_LIMIT', None)
+        else:
+            os.environ['OMP_THREAD_LIMIT'] = old
+
+
+def _unit_count(source):
+    """Pages of a source (for the progress bar); DOCX/TXT count as one."""
+    path = os.path.join(SOURCES, source['file'])
+    try:
+        if source['ext'] in PDF_EXT:
+            with pymupdf.open(path) as document:
+                return len(document)
+        if source['ext'] in IMAGE_EXT:
+            with Image.open(path) as image:
+                return getattr(image, 'n_frames', 1)
+    except Exception:  # noqa: BLE001 — file hỏng: báo lỗi lúc xử lý thật
+        pass
+    return 1
+
+
+class _FileTask:
+    def __init__(self, source):
+        self.source = source
+        self.sid = source['id']
+        self.folder = os.path.join(LINES, self.sid)
+        self.counts = dict(pages=0, digital_pages=0, scan_pages=0, auto_lines=0, scan_lines=0)
+        self.corpus = []
+        self.futures = []
+        self.lock = threading.Lock()
+        self.error = None
+        self.submitted = False  # job thread đã đọc hết trang, chỉ còn chờ OCR
+        self.finished = False
+
+
+class _Batch:
+    """OCR thread pool shared by all files of one process_job, with progress accounting."""
+
+    def __init__(self, job, total_units):
+        self.job = job
+        self.total = max(total_units, 1)
+        self.done_units = 0
+        self.done_files = 0
+        self.lock = threading.Lock()
+        self.pool = concurrent.futures.ThreadPoolExecutor(OCR_WORKERS, thread_name_prefix='ocr')
+        # giới hạn số trang đã render chờ OCR (mỗi trang ~9 MB) để job thread không chạy quá xa
+        self.slots = threading.Semaphore(OCR_WORKERS * 2)
+        self.futures = set()
+        self.tasks = []
+
+    def unit_done(self):
+        with self.lock:
+            self.done_units += 1
+            self.job.progress = 0.97 * min(self.done_units / self.total, 1)
+            self.job.message = f'Đã xử lý {self.done_units}/{self.total} trang, xong {self.done_files} file'
+
+    def submit(self, task, func, *args):
+        while not self.slots.acquire(timeout=0.5):
+            self.job.check_stop()
+            self.finish_ready()  # file trước xong OCR thì báo xong ngay, không đợi file này đọc hết
+        future = self.pool.submit(func, *args)
+        future.add_done_callback(lambda _f: self.slots.release())
+        task.futures.append(future)
+        self.futures.add(future)
+
+    def finish_ready(self):
+        """Finalize (in the job thread) every file whose pages are all done; True when all files are finished."""
+        for task in self.tasks:
+            if task.finished or not task.submitted or not all(f.done() for f in task.futures):
+                continue
+            for future in task.futures:
+                self.futures.discard(future)
+                if not future.cancelled() and future.exception() and not task.error:
+                    task.error = future.exception()
+            if isinstance(task.error, JobStopped):
+                raise JobStopped()
+            _finish_source(self.job, task)
+            task.finished = True
+            self.done_files += 1
+        return all(task.finished for task in self.tasks)
+
+    def shutdown(self):
+        self.pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _submit_source(batch, task):
+    """Read one source in the job thread: text pages are done here, scan pages go to the OCR pool."""
+    job, source, sid, folder, counts = batch.job, task.source, task.sid, task.folder, task.counts
     with store.lock:
+        source.update(status='processing', error='')
         for name in [n for n, line in store.lines.items() if line['source'] == sid]:
             del store.lines[name]
+    shutil.rmtree(folder, ignore_errors=True)
     os.makedirs(os.path.join(folder, 'auto'))
     os.makedirs(os.path.join(folder, 'scan'))
     path = os.path.join(SOURCES, source['file'])
-    corpus = []
-    counts = dict(pages=0, digital_pages=0, scan_pages=0, auto_lines=0, scan_lines=0)
     rng = random.Random(sid)
 
     if source['ext'] == '.docx':
-        corpus = list(make_gt._docx_lines(path))
+        task.corpus = list(make_gt._docx_lines(path))
+        batch.unit_done()
     elif source['ext'] == '.txt':
         with open(path, encoding='utf-8', errors='replace') as f:
-            corpus = f.read().splitlines()
+            task.corpus = f.read().splitlines()
+        batch.unit_done()
     elif source['ext'] in PDF_EXT:
-        document = pymupdf.open(path)
-        counts['pages'] = len(document)
-        for page in document:
-            job.check_stop()
-            job.progress = (index + (page.number + 1) / len(document)) / total
-            job.message = f'{source["name"]}: trang {page.number + 1}/{len(document)}'
-            if page_kind(page) == 'digital':
-                counts['digital_pages'] += 1
-                for line_index, image, text in make_gt.page_samples(page, rng):
-                    name = f'{sid}_p{page.number + 1}_{line_index:03d}'
-                    make_gt._save(os.path.join(folder, 'auto'), name, image, text)
-                    corpus.append(text)
-                    counts['auto_lines'] += 1
-            else:
-                counts['scan_pages'] += 1
-                counts['scan_lines'] += _scan_page(sid, folder, page.number + 1, crop_for_labeling.page_image(page))
+        with pymupdf.open(path) as document:
+            counts['pages'] = len(document)
+            for page in document:
+                job.check_stop()
+                if page_kind(page) == 'digital':
+                    counts['digital_pages'] += 1
+                    for line_index, image, text in make_gt.page_samples(page, rng):
+                        name = f'{sid}_p{page.number + 1}_{line_index:03d}'
+                        make_gt._save(os.path.join(folder, 'auto'), name, image, text)
+                        task.corpus.append(text)
+                        counts['auto_lines'] += 1
+                    batch.unit_done()
+                else:
+                    counts['scan_pages'] += 1
+                    batch.submit(task, _ocr_page, batch, task, page.number + 1, crop_for_labeling.render_gray(page))
     else:
         for number, gray in enumerate(_image_pages(path), 1):
             job.check_stop()
             counts['pages'] = number
             counts['scan_pages'] += 1
-            job.message = f'{source["name"]}: ảnh {number}'
-            counts['scan_lines'] += _scan_page(sid, folder, number, crop_for_labeling.prepare(gray))
+            batch.submit(task, _ocr_page, batch, task, number, gray)
 
-    corpus = [norm_label(line) for line in corpus]
+
+def _ocr_page(batch, task, number, gray):
+    """Runs in an OCR worker thread: straighten + binarize (OSD) and cut the page into labeled lines."""
+    batch.job.check_stop()
+    found = _scan_page(task.sid, task.folder, number, crop_for_labeling.prepare(gray))
+    with task.lock:
+        task.counts['scan_lines'] += found
+    batch.unit_done()
+
+
+def _finish_source(job, task):
+    source, counts = task.source, task.counts
+    if task.error:
+        with store.lock:
+            source.update(status='error', error=str(task.error))
+        job.log(f'LỖI {source["name"]}: {task.error}')
+        store.save()
+        return
+    corpus = [norm_label(line) for line in task.corpus]
     corpus = [line for line in corpus if len(line) >= make_gt.MIN_CHARS]
-    with open(os.path.join(folder, 'corpus.txt'), 'w', encoding='utf-8') as f:
+    with open(os.path.join(task.folder, 'corpus.txt'), 'w', encoding='utf-8') as f:
         f.write('\n'.join(corpus) + ('\n' if corpus else ''))
-    source.update(counts, corpus_lines=len(corpus))
+    with store.lock:
+        source.update(counts, corpus_lines=len(corpus), status='done')
     job.log(f'{source["name"]}: {counts["pages"]} trang ({counts["digital_pages"]} có lớp chữ, '
             f'{counts["scan_pages"]} scan) → {counts["auto_lines"]} dòng tự gán nhãn, '
             f'{counts["scan_lines"]} dòng scan chờ duyệt, {len(corpus)} dòng corpus')
+    store.save()
 
 
 def page_kind(page):

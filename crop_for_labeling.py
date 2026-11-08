@@ -22,8 +22,13 @@ PAD = 6
 
 
 def page_image(page):
+    return prepare(render_gray(page))
+
+
+def render_gray(page):
+    """300 DPI grayscale array of a PDF page (copied out of the pixmap, safe to hand to another thread)."""
     pixmap = page.get_pixmap(matrix=pymupdf.Matrix(ZOOM, ZOOM), alpha=False, colorspace=pymupdf.csGRAY)
-    return prepare(np.frombuffer(pixmap.samples, np.uint8).reshape(pixmap.height, pixmap.width))
+    return np.frombuffer(pixmap.samples, np.uint8).reshape(pixmap.height, pixmap.width).copy()
 
 
 def prepare(gray):
