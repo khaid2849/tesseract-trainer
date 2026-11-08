@@ -6,6 +6,7 @@ Pillow>=10.0,<14
 pytesseract>=0.3.10,<1
 python-docx>=1.1,<2
 Werkzeug>=3.0,<4
+rapidfuzz>=3.0,<4
 # vie-ocr-data (vod.py)
 PyYAML>=6.0,<7
 requests>=2.28,<3

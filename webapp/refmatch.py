@@ -4,9 +4,15 @@ Candidates come from word trigrams with diacritics stripped, so OCR accent error
 measured on diacritic-free text too: it says "this is the same sentence", independent of how badly OCR read the accents
 (those badly-read lines are exactly the valuable ones).
 """
+import bisect
 import collections
 import re
 import unicodedata
+
+try:
+    from rapidfuzz.distance import Levenshtein as _levenshtein  # bản C, nhanh hơn ~90 lần
+except ImportError:  # chưa cài lại requirements: vẫn chạy được, chỉ chậm
+    _levenshtein = None
 
 WORD_RE = re.compile(r'\S+')
 DIGITS_RE = re.compile(r'\d+')
@@ -28,6 +34,8 @@ def fold_text(text):
 
 
 def distance(a, b):
+    if _levenshtein is not None:
+        return _levenshtein.distance(a, b)
     if len(a) < len(b):
         a, b = b, a
     previous = list(range(len(b) + 1))
@@ -63,12 +71,9 @@ class ReferenceIndex:
         return len(self.words)
 
     def _bounds(self, position):
-        start = 0
-        for end in self.doc_end:
-            if position < end:
-                return start, end
-            start = end
-        return start, len(self.words)
+        k = bisect.bisect_right(self.doc_end, position)
+        start = self.doc_end[k - 1] if k else 0
+        return start, (self.doc_end[k] if k < len(self.doc_end) else len(self.words))
 
     def match(self, line):
         """(suggested text, score 0..1) or (None, 0.0) when nothing similar exists."""
