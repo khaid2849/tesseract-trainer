@@ -116,6 +116,8 @@
       <span class="muted">chữ thường, số, gạch dưới. Đây cũng là tên dùng với <code>-l</code>.</span></label>
     <label>Số vòng train <input name="iterations" type="number" min="100" step="100" value="10000">
       <span class="muted" id="eta"></span></label>
+    <label>Số dòng PDF + scan tối đa <input name="max_lines" type="number" min="0" step="1000" value="80000">
+      <span class="muted" id="max-lines-hint"></span></label>
     <label>Số dòng giả lập <input name="synth" type="number" min="0" step="100">
       <span class="muted">vẽ từ chữ trong tài liệu, 30% IN HOA (điểm yếu của <code>vie</code>). 0 = tắt.</span></label>
     <label>Số dòng từ kho vie-ocr-data <input name="external" type="number" min="0" step="1000">

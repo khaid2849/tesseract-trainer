@@ -784,6 +784,7 @@ def train_job(job, params):
     iterations = int(params.get('iterations') or 10000)
     synth_count = int(params.get('synth') or 0)
     real_weight = max(1, int(params.get('real_weight') or 2))
+    max_lines = max(0, int(params.get('max_lines') or 0))
 
     data_dir = os.path.join(TESSTRAIN, 'data')
     gt_dir = os.path.join(data_dir, f'{model}-ground-truth')
@@ -798,20 +799,33 @@ def train_job(job, params):
 
     job.step('Gom dòng từ PDF có lớp chữ và dòng scan đã duyệt', 0.03)
     train_sources = [s for s in store.sources.values() if s['role'] == 'train' and s['status'] == 'done']
-    n_auto = n_scan = 0
+    auto = []
     corpus = []
     for source in train_sources:
-        folder = os.path.join(LINES, source['id'])
-        for name in os.listdir(os.path.join(folder, 'auto')):
-            _link(os.path.join(folder, 'auto', name), os.path.join(gt_dir, name))
-        n_auto += source['auto_lines']
-        with open(os.path.join(folder, 'corpus.txt'), encoding='utf-8') as f:
+        folder = os.path.join(LINES, source['id'], 'auto')
+        auto += [os.path.join(folder, name[:-4]) for name in sorted(os.listdir(folder)) if name.endswith('.png')]
+        with open(os.path.join(LINES, source['id'], 'corpus.txt'), encoding='utf-8') as f:
             corpus += f.read().splitlines()
     with store.lock:
-        approved = [(n, line) for n, line in store.lines.items() if line['status'] == 'approved'
+        approved = [(n, dict(line)) for n, line in store.lines.items() if line['status'] == 'approved'
                     and store.sources.get(line['source'], {}).get('role') == 'train']
+    corpus += [line['text'] for _name, line in approved]  # corpus giả lập luôn lấy hết, kể cả khi giới hạn dòng
+    available = len(auto) + len(approved) * real_weight
+    if max_lines and available > max_lines:
+        # Bước dựng .lstmf tốn thời gian theo số dòng: lấy ngẫu nhiên, giữ nguyên tỉ lệ PDF / scan
+        fraction = max_lines / available
+        rng = random.Random(7)
+        auto = rng.sample(auto, round(len(auto) * fraction))
+        approved = rng.sample(approved, round(len(approved) * fraction))
+        job.log(f'Giới hạn {max_lines} dòng PDF + scan (có {available}): lấy ngẫu nhiên '
+                f'{len(auto)} dòng PDF + {len(approved)} dòng scan (×{real_weight})')
+    for base in auto:
+        name = os.path.basename(base)
+        _link(base + '.png', os.path.join(gt_dir, name + '.png'))
+        _link(base + '.gt.txt', os.path.join(gt_dir, name + '.gt.txt'))
+    n_auto = len(auto)
+    n_scan = 0
     for name, line in approved:
-        corpus.append(line['text'])
         base = os.path.join(LINES, line['source'], 'scan', name)
         for copy in range(real_weight):  # dòng scan thật hiếm nên nhân bản để nặng ký hơn dòng giả lập
             target = os.path.join(gt_dir, f'{name}_w{copy}')

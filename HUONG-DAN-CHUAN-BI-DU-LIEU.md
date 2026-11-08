@@ -119,6 +119,9 @@ Giao diện và các bước bên dưới giống hệt.
 4. **Train**: đặt tên model (mặc định `vie_syntra`) rồi bấm "Bắt đầu train". Máy Mac dev train khoảng 12 vòng/giây:
    10.000 vòng ≈ 15 phút, 30.000 vòng ≈ 45 phút; máy khác nhanh/chậm hơn, tab Train hiện thời gian còn lại thật. Có thể theo dõi biểu đồ lỗi và nhật ký.
    Train xong, app tự xuất model và tự đánh giá nếu đã có file "Đánh giá".
+   "Số dòng PDF + scan tối đa" (mặc định 80.000) lấy ngẫu nhiên một phần dòng, giữ tỉ lệ PDF/scan: trước khi train,
+   mỗi dòng phải dựng 1 file `.lstmf` (~0,15 giây/dòng/luồng), nên vài trăm nghìn dòng mất nhiều giờ chỉ để chuẩn bị.
+   Mỗi vòng train dùng 1 dòng, nên số dòng chỉ cần lớn hơn số vòng vài lần. 0 = dùng hết.
 5. **Model & đánh giá**: xem bảng so sánh rồi tải `<tên>.traineddata` (bản best, khoảng 12 MB) hoặc
    `<tên>_fast.traineddata` (khoảng 1,7 MB, nhanh hơn, kém chính xác hơn một chút). Model cũng nằm sẵn ở
    `~/Works/tesseract-train/models/`.

@@ -300,6 +300,7 @@ function renderTrainStats() {
     : `chưa có: chạy vie-ocr-data/vod.py build-gt (đọc ở ${ext.dir})`;
   const synth = $('#train-form [name=synth]');
   if (!synth.dataset.touched) synth.value = state.counts.default_synth;
+  updateMaxLinesHint();
   const warns = [];
   if (!state.env.ready) warns.push('Môi trường chưa sẵn sàng: vào tab 1 bấm "Cài đặt tự động".');
   if (train.auto + train.scan === 0) warns.push('Chưa có dòng train nào: tải file ở tab 2 (và duyệt dòng scan ở tab 3).');
@@ -314,6 +315,19 @@ function updateEta() {
   const it = Number($('#train-form [name=iterations]').value || 0);
   $('#eta').textContent = it ? `ước tính ~${fmtDur(it / ITER_PER_SEC)} theo tốc độ máy Mac dev; thời gian còn lại thật hiện khi đang train` : '';
 }
+function updateMaxLinesHint() {
+  if (!state.counts) return;
+  const { train } = state.counts.split;
+  const weight = Number($('#train-form [name=real_weight]').value || 1);
+  const available = train.auto + train.scan * weight;
+  const max = Number($('#train-form [name=max_lines]').value || 0);
+  const used = max && max < available ? max : available;
+  $('#max-lines-hint').textContent = `có ${available.toLocaleString('vi-VN')} dòng (PDF + scan × hệ số), sẽ dùng `
+    + `${used.toLocaleString('vi-VN')}: lấy ngẫu nhiên, giữ tỉ lệ PDF/scan. 0 = dùng hết. `
+    + 'Mỗi dòng phải dựng file .lstmf trước khi train, nên càng nhiều dòng càng lâu.';
+}
+$('#train-form [name=max_lines]').addEventListener('input', updateMaxLinesHint);
+$('#train-form [name=real_weight]').addEventListener('input', updateMaxLinesHint);
 $('#train-form [name=iterations]').addEventListener('input', updateEta);
 $('#train-form [name=synth]').addEventListener('input', (e) => { e.target.dataset.touched = '1'; });
 $('#train-form [name=external]').addEventListener('input', (e) => { e.target.dataset.touched = '1'; });
